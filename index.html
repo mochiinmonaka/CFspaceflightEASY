@@ -1,0 +1,658 @@
+<!DOCTYPE html>
+
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>キャッシュフロー★スペースフライト</title>
+<style>
+body {
+  margin:0;
+  background:black;
+  color:white;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+  height:100vh;
+}
+
+canvas {
+  width:100vw;
+  max-width:1000px;
+  aspect-ratio:16 / 9;
+  display:block;
+}
+
+.panel {
+background: rgba(0,0,0,0.7);
+padding:20px;
+border-radius:15px;
+border:2px solid white;
+}
+
+#startScreen, #countdown, #gameOver {
+ position:absolute;
+ top:40%;
+ left:50%;
+ transform:translate(-50%,-50%);
+ z-index: 100;
+}
+
+.choices {
+  position: fixed;
+  bottom: 10px;
+  width: 100%;
+  display: flex;
+  gap: 10px;
+  padding: 10px;
+  box-sizing: border-box;
+  z-index: 1000;
+}
+
+button {
+  flex: 1;
+  min-width: 0;
+  padding: 15px;
+  font-size: 16px;
+  background: rgba(255,255,255,0.9);
+  border-radius: 10px;
+}
+
+
+</style>
+
+</head>
+
+<body>
+
+<div id="startScreen" class="panel">
+<h2>🚀 キャッシュフロー★スペースフライト</h2>
+<p>間接法キャッシュ・フロー計算書の調整項目を選んで<br>障害物を避けよう！<br>ＣＦ増加→上 / ＣＦ減少→下<br></p>
+<button onclick="startCountdown()">スタート</button>
+</div>
+
+<div id="countdown"></div>
+
+<div id="gameOver" class="panel" style="display:none;">
+<h2>GameOver!</h2>
+<h2 id="result"></h2>
+<button onclick="location.reload()">もう一度</button>
+</div>
+
+<div id="reason"></div>
+
+<canvas id="gameCanvas" width="640" height="360"></canvas>
+
+<div class="choices">
+<button onclick="selectChoice(0)" id="btn0"></button>
+<button onclick="selectChoice(1)" id="btn1"></button>
+<button onclick="selectChoice(2)" id="btn2"></button>
+</div>
+
+<script>
+const canvas=document.getElementById("gameCanvas");
+const ctx=canvas.getContext("2d");
+
+const rows=5;
+let step = canvas.height / rows;
+
+let x = canvas.width * 0.15;
+let y=step*2;
+let size=step;
+
+let running=false;
+let combo=0;
+let obstacles=[];
+let frame=0;
+
+let stars = Array.from({length:50}, ()=>({
+  x: Math.random()*canvas.width,
+  y: Math.random()*canvas.height
+}));
+
+let explosion = null;
+
+let explosionBuffer;
+let lastBeepTime = 0;
+
+let lastReason = "";
+
+let lastRow = -1;
+
+let speed = 2;
+let passedCount = 0;
+
+let nextX = canvas.width; 
+
+let lastType = null;
+
+// ===== 音 =====
+const audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+
+function beep(f,d){
+  const o=audioCtx.createOscillator();
+  const g=audioCtx.createGain();
+
+  o.type = "sine";
+
+  o.connect(g);
+  g.connect(audioCtx.destination);
+
+  o.frequency.setValueAtTime(f, audioCtx.currentTime);
+
+  g.gain.setValueAtTime(0.05, audioCtx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + d);
+
+  o.start();
+  o.stop(audioCtx.currentTime+d);
+}
+
+function playBeep(f,d){
+
+  const now = performance.now();
+
+  // ★50ms以内は鳴らさない
+  if(now - lastBeepTime < 50) return;
+
+  lastBeepTime = now;
+
+  beep(f,d);
+}
+
+function createExplosionBuffer(){
+
+  const bufferSize = audioCtx.sampleRate * 0.5;
+  const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+  const data = buffer.getChannelData(0);
+
+  for(let i = 0; i < bufferSize; i++){
+    data[i] = Math.random() * 2 - 1;
+  }
+
+  explosionBuffer = buffer;
+}
+
+function explosionSound(){
+
+  const noise = audioCtx.createBufferSource();
+  noise.buffer = explosionBuffer;
+
+  const gain = audioCtx.createGain();
+
+  gain.gain.setValueAtTime(0.5, audioCtx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.5);
+
+  const filter = audioCtx.createBiquadFilter();
+  filter.type = "lowpass";
+  filter.frequency.setValueAtTime(1000, audioCtx.currentTime);
+
+  noise.connect(filter);
+  filter.connect(gain);
+  gain.connect(audioCtx.destination);
+
+  noise.start();
+}
+
+// ===== カウントダウン =====
+function startCountdown(){
+
+  nextX = canvas.width;
+  obstacles = [];
+  combo = 0;
+  y = step * 2;
+
+  refillChoices();
+  updateButtons();
+
+  document.getElementById("startScreen").style.display="none";
+  let c=3;
+  const cd=document.getElementById("countdown");
+
+  const int=setInterval(()=>{
+    cd.innerText=c;
+    beep(400,0.1);
+    c--;
+
+    if(c<0){
+      clearInterval(int);
+      cd.innerText="GO!";
+      beep(800,0.3);
+      setTimeout(()=>{cd.innerText="";running=true;},500);
+    }
+  },800);
+}
+
+// ===== データ =====
+const data=[
+  {text:"↑減価償却費",effect:"increase",reason:"減価償却費：非現金費用のため加算"},
+  {text:"↑のれん償却",effect:"increase",reason:"のれん償却：非現金費用のため加算"},
+  {text:"↑減損損失",effect:"increase",reason:"減損損失：非現金費用のため加算"},
+  {text:"↑貸倒損失",effect:"increase",reason:"貸倒損失：非現金費用のため加算"},
+  {text:"↑投資有価証券評価損",effect:"increase",reason:"投資有価証券評価損：非現金費用のため加算"},
+  {text:"↓投資有価証券評価益",effect:"decrease",reason:"投資有価証券評価益：非現金利益のため控除"},
+  {text:"↑固定資産売却損",effect:"increase",reason:"固定資産売却損：非現金費用のため加算"},
+  {text:"↓固定資産売却益",effect:"decrease",reason:"固定資産売却益：非現金利益のため控除"},
+  {text:"↑引当金の増加",effect:"increase",reason:"引当金の増加：非現金費用のため加算"},
+  {text:"↓引当金の減少",effect:"decrease",reason:"引当金の減少：非現金利益のため控除"},
+  {text:"↑退職給付費用",effect:"increase",reason:"退職給付費用：現金未支出部分を加算"},
+  {text:"↑棚卸資産評価損",effect:"increase",reason:"棚卸資産評価損：非現金費用のため加算"},
+  {text:"↓棚卸資産評価益",effect:"decrease",reason:"棚卸資産評価益：非現金利益のため控除"},
+  {text:"↑繰延税金資産の増加",effect:"increase",reason:"繰延税金資産の増加：税金費用が現金支払より多い"},
+  {text:"↓繰延税金資産の減少",effect:"decrease",reason:"繰延税金資産の減少：過去計上分の解消"},
+  {text:"↓繰延税金負債の増加",effect:"decrease",reason:"繰延税金負債の増加：税金費用が現金支払より少ない"},
+  {text:"↑繰延税金負債の減少",effect:"increase",reason:"繰延税金負債の減少：過去負債の取り崩し"},
+  {text:"↓売上債権の増加",effect:"decrease",reason:"売上債権の増加：売上計上済みだが未回収"},
+  {text:"↑売上債権の減少",effect:"increase",reason:"売上債権の減少：回収により現金増加"},
+  {text:"↓棚卸資産の増加",effect:"decrease",reason:"棚卸資産の増加：在庫増加で現金流出"},
+  {text:"↑棚卸資産の減少",effect:"increase",reason:"棚卸資産の減少：在庫減少で現金回収"},
+  {text:"↑仕入債務の増加",effect:"increase",reason:"仕入債務の増加：支払繰延で現金流出抑制"},
+  {text:"↓仕入債務の減少",effect:"decrease",reason:"仕入債務の減少：支払実行で現金流出"},
+  {text:"↑未払費用の増加",effect:"increase",reason:"未払費用の増加：費用計上のみで未払"},
+  {text:"↓未払費用の減少",effect:"decrease",reason:"未払費用の減少：支払により現金減少"},
+  {text:"↑前受収益の増加",effect:"increase",reason:"前受収益の増加：現金を先に受領"},
+  {text:"↓前受収益の減少",effect:"decrease",reason:"前受収益の減少：収益化で現金増なし"},
+  {text:"↓未収収益の増加",effect:"decrease",reason:"未収収益の増加：収益計上済みだが未入金"},
+  {text:"↑未収収益の減少",effect:"increase",reason:"未収収益の減少：現金回収が発生"},
+  {text:"↓法人税等の支払",effect:"decrease",reason:"法人税等の支払：実際の現金支出"},
+  {text:"↓支払利息",effect:"decrease",reason:"支払利息：実際の現金支出"},
+  {text:"↑受取利息",effect:"increase",reason:"受取利息：現金収入"},
+  {text:"↑受取配当金",effect:"increase",reason:"受取配当金：現金収入"},
+  {text:"↑株式報酬費用",effect:"increase",reason:"株式報酬費用：非現金費用のため加算"},
+  {text:"↑為替差損",effect:"increase",reason:"為替差損：評価損で現金流出なし"},
+  {text:"↓為替差益",effect:"decrease",reason:"為替差益：評価益で現金流入なし"}
+];
+
+let pool=[];
+let current=[];
+
+function resizeCanvas(){
+  const width = canvas.clientWidth;
+  const height = width * 9 / 16;
+
+  canvas.width = width;
+  canvas.height = height;
+
+  step = canvas.height / rows;
+
+  size = step;
+  x = canvas.width * 0.15;
+  y = Math.min(y, canvas.height - size);addEventListener
+
+  stars = Array.from({length:50}, ()=>({
+    x: Math.random()*canvas.width,
+    y: Math.random()*canvas.height
+}));
+
+}
+
+
+function newChoices(){
+  pool=[...data];
+
+  current=[];
+
+  // 必ず増減1つずつ
+  const inc=pool.filter(d=>d.effect==="increase");
+  const dec=pool.filter(d=>d.effect==="decrease");
+
+  current.push(inc[Math.floor(Math.random()*inc.length)]);
+  current.push(dec[Math.floor(Math.random()*dec.length)]);
+
+  // 3つ目
+  current.push(pool[Math.floor(Math.random()*pool.length)]);
+
+  current=current.sort(()=>Math.random()-0.5);
+
+  updateButtons();
+}
+
+function updateButtons(){
+  current.forEach((c,i)=>{
+    document.getElementById("btn"+i).innerText=c.text;
+  });
+}
+
+// ===== 選択 =====
+function selectChoice(i){
+  if(!running) return;
+  if(!current[i]) return;
+
+  const c = current[i];
+
+  combo++;
+
+  if(c.effect==="increase"){
+    y -= step;
+    playBeep(700,0.1);
+  }else{
+    y += step;
+    playBeep(700,0.1);
+  }
+
+  lastReason = c.reason;
+  
+  refillChoices();
+  updateButtons();
+}
+
+function refillChoices(){
+
+  const inc = data.filter(d=>d.effect==="increase");
+  const dec = data.filter(d=>d.effect==="decrease");
+
+  const newChoices = [];
+
+  // ★必ず1つずつ
+  newChoices.push(inc[Math.floor(Math.random()*inc.length)]);
+  newChoices.push(dec[Math.floor(Math.random()*dec.length)]);
+
+  // ★3つ目（重複防止）
+  let extra;
+  do{
+    extra = data[Math.floor(Math.random()*data.length)];
+  }while(newChoices.includes(extra));
+
+  newChoices.push(extra);
+
+  // シャッフル
+  current = newChoices.sort(()=>Math.random()-0.5);
+
+}
+
+function showReason(t){
+  const r=document.getElementById("reason");
+  r.innerText=t;
+  setTimeout(()=>r.innerText="",2000);
+}
+
+// ===== 障害物 =====
+function createObstacle(){
+
+  const types=[
+    {h:1,w:1,count: Math.random()<0.3 ? 2 : 1},
+    {h:2,w:2,count: Math.random()<0.3 ? 2 : 1},
+    {h:3,w:3,count:1}
+  ];
+
+  let attempts = 0;
+
+  do {
+    const r = Math.random();
+
+    if(r < 0.2){
+      t = types[2]; // large
+    }else if(r < 0.5){
+      t = types[1]; // medium
+    }else{
+      t = types[0]; // small
+    }
+
+    attempts++;
+
+  } while(t === lastType && attempts < 10);
+
+
+  lastType = t;
+
+  const gap = (Math.floor(Math.random()*3) + 2) * step;
+
+  nextX += gap;
+
+  let usedRows = [];
+  const safeRow = Math.floor(Math.random()*rows);
+
+  for(let i=0;i<t.count;i++){
+
+    let row;
+    let attempts = 0;
+
+    do {
+
+      if(Math.random() < 0.85){
+        const center = Math.floor((rows - t.h)/2);
+        const pattern = [0, 0, 0, -1, 1]; 
+        const offset = pattern[Math.floor(Math.random()*pattern.length)];
+
+        row = center + offset;
+        row = Math.max(0, Math.min(rows - t.h, row));
+      }else{
+        row = Math.floor(Math.random()*(rows - t.h + 1));
+      }
+
+      attempts++;
+
+    } while(
+      (
+        row === lastRow ||
+        isOverlapping(row, t.h, usedRows) ||
+        isBlockingSafe(row, t.h, safeRow)
+      )
+      && attempts < 20
+    );
+
+    // ★最終保険
+    if(attempts >= 20){
+      row = Math.max(0, Math.min(rows - t.h, safeRow - 1));
+    }
+
+    lastRow = row;
+
+    usedRows.push({start: row, end: row + t.h});
+
+    // ★ここでtypeName作る
+    let typeName;
+    if(t.h===1) typeName="small";
+    else if(t.h===2) typeName="medium";
+    else typeName="large";
+
+    // ★ここで1回だけpush
+    obstacles.push({
+      x: nextX,
+      y: row * step,
+      w: step * t.w,
+      h: step * t.h,
+      img: getRandomObs(typeName),
+      passed: false
+    });
+
+    nextX += step * t.w;
+  }
+}
+
+function isOverlapping(row, height, usedRows){
+  return usedRows.some(r =>
+    row < r.end + 1 && (row + height) > r.start - 1
+  );
+}
+
+function isBlockingSafe(row, height, safeRow){
+  return row <= safeRow && (row + height - 1) >= safeRow;
+}
+
+// ===== 判定 =====
+function collision(){
+  if(!running) return;
+
+  if(y<0||y>canvas.height-size){
+    end();
+    return;
+  }
+
+  for(let o of obstacles){
+    const margin = 5;
+
+    if(
+       x + margin < o.x + o.w - margin &&
+       x + size - margin > o.x + margin &&
+       y + margin < o.y + o.h - margin &&
+       y + size - margin > o.y + margin
+    ){
+       end();
+       return;
+    }
+  }
+}
+
+function end(){
+
+  if(!running) return;
+
+  running = false;
+
+  // ★先に止める（重要）
+  
+  triggerExplosion(x + size/2, y + size/2);
+
+  // ★音は遅らせる
+  setTimeout(() => {
+    explosionSound();
+  }, 0);
+
+  const panel = document.getElementById("gameOver");
+
+  panel.style.display = "block";
+  panel.style.zIndex = "1000";
+
+  document.getElementById("result").innerText = "コンボ：" + combo+ "\n理由：" + lastReason;
+}
+
+// ===== 描画 =====
+
+ const obsImages = {
+   small: [
+    "obs_s1.png",
+    "obs_s2.png",
+    "obs_s3.png"
+   ],
+   medium: [
+    "obs_m1.png",
+    "obs_m2.png",
+    "obs_m3.png"
+   ],
+   large: [
+    "obs_l1.png",
+    "obs_l2.png",
+    "obs_l3.png"
+   ]
+ };
+
+const loadedImages = {
+  small: [],
+  medium: [],
+  large: []
+};
+
+function preloadImages(){
+  for(let type in obsImages){
+    obsImages[type].forEach(src=>{
+      const img = new Image();
+      img.src = src;
+      loadedImages[type].push(img);
+    });
+  }
+}
+
+ function loadImage(src){
+  const img = new Image();
+  img.src = src;
+  return img;
+ }
+
+ function getRandomObs(type){
+  const arr = loadedImages[type];
+  return arr[Math.floor(Math.random()*arr.length)];
+ }
+
+const shipImg = new Image();
+ shipImg.src = "ship.png";
+
+function drawStars(){
+  ctx.fillStyle = "white";
+  stars.forEach(s=>{
+    ctx.fillRect(s.x, s.y, 2, 2);
+    s.x -= 1;
+    if(s.x < 0) s.x = canvas.width;
+  });
+}
+
+function draw(){
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+
+  // 宇宙船
+ 
+ ctx.drawImage(shipImg, x, y, size, size);
+
+  // 障害物
+  obstacles.forEach(o=>{
+    ctx.drawImage(o.img, o.x, o.y, o.w, o.h);
+  });
+
+  //背景の星
+  drawStars();
+
+  ctx.fillText("Combo:"+combo,10,20);
+
+  //爆発
+  drawExplosion(); 
+
+}
+
+//爆発エフェクト
+function triggerExplosion(x,y){
+  explosion = {x, y, r:10};
+}
+
+function drawExplosion(){
+  if(!explosion) return;
+
+  ctx.beginPath();
+  ctx.arc(explosion.x, explosion.y, explosion.r, 0, Math.PI*2);
+  ctx.strokeStyle = "orange";
+  ctx.stroke();
+
+  explosion.r += 5;
+
+  if(explosion.r > 60) explosion = null;
+}
+
+
+// ===== ループ =====
+function loop(){
+  if(running){
+    frame++;
+    obstacles.forEach(o=>o.x -= speed);
+
+    obstacles.forEach(o=>{
+      if(!o.passed && o.x + o.w < x){
+        o.passed = true;
+        passedCount++;
+
+        if(passedCount % 5 === 0){
+          speed += 0.5;
+        }
+      }
+    });
+
+    if(frame%50===0) createObstacle();
+
+    obstacles=obstacles.filter(o=>o.x>-100);
+
+    collision();
+  }
+
+  draw();
+  requestAnimationFrame(loop);
+}
+
+createExplosionBuffer();
+
+resizeCanvas();
+window.addEventListener("resize", resizeCanvas);
+preloadImages();
+refillChoices();
+loop();
+</script>
+
+</body>
+</html>
